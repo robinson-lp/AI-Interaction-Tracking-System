@@ -2,9 +2,15 @@
 
 // Claude adapter — targets claude.ai
 //
-// Claude.ai updates its data-testid values across builds. This adapter covers
-// every known variant and falls back to structural heuristics so it stays
-// resilient without being tied to a single set of attribute values.
+// DOM structure confirmed from live inspection:
+//   Human: <div data-testid="user-message" class="font-large !font-user-message ...">
+//   AI:    <p class="font-claude-response-body ..."> (one per paragraph, no turn-level testid)
+//
+// Because AI content has no wrapper data-testid, we detect individual response
+// paragraphs via class name and use normalizeTurnNode() to lift detection up to
+// their shared parent container — the element that holds all paragraphs of one
+// response. main.js calls this hook before passing nodes to scheduleCapture/
+// captureNode so the entire turn is watched and captured as one unit.
 
 window.AITracker.adapter = {
 
@@ -14,71 +20,105 @@ window.AITracker.adapter = {
 
   getConversationRoot() {
     return (
-      document.querySelector('[data-testid="conversation"]') ||
+      document.querySelector('[data-testid="conversation"]')            ||
       document.querySelector('[data-testid="chat-messages-container"]') ||
-      document.querySelector('[data-testid="virtuoso-scroller"]') ||
-      document.querySelector('main [class*="ConversationContainer"]') ||
-      document.querySelector('main [class*="conversation"]') ||
-      document.querySelector('main [class*="Thread"]') ||
-      document.querySelector('main [class*="Messages"]') ||
+      document.querySelector('[data-testid="virtuoso-scroller"]')       ||
+      document.querySelector('main [class*="ConversationContainer"]')   ||
+      document.querySelector('main [class*="conversation"]')            ||
+      document.querySelector('main [class*="Thread"]')                  ||
       document.querySelector('main')
     );
   },
 
   // ─── Message Detection ────────────────────────────────────────────────────
 
-  // Covers all known data-testid patterns Claude has shipped across builds.
-  messageSelector: [
-    '[data-testid="human-turn"]',
-    '[data-testid="ai-turn"]',
-    '[data-testid="user-turn"]',
-    '[data-testid="assistant-turn"]',
-    '[data-testid="user-message"]',
-    '[data-testid="assistant-message"]',
-    '[data-testid="user-human-turn"]',
-    '[data-testid="assistant-turn-content"]',
-  ].join(', '),
-
-  // Returns 'human' | 'assistant' | null from a data-testid value.
-  _roleFromTestId(testId) {
-    if (!testId) return null;
-    const t = testId.toLowerCase();
-    if (t === 'human-turn' || t === 'user-turn' ||
-        t === 'user-message' || t === 'user-human-turn') return 'human';
-    if (t === 'ai-turn' || t === 'assistant-turn' ||
-        t === 'assistant-message' || t === 'assistant-turn-content') return 'assistant';
-    // Catch any future variations that contain these words
-    if (t.includes('human') || (t.includes('user') && !t.includes('assistant'))) return 'human';
-    if (t.includes('ai') || t.includes('assistant')) return 'assistant';
-    return null;
-  },
+  // Matches human-turn divs (data-testid) AND individual AI response paragraphs
+  // (class-based). normalizeTurnNode lifts the paragraphs to their container.
+  messageSelector: '[data-testid="user-message"], [class*="font-claude-response"]',
 
   isMessageNode(node) {
     if (node.nodeType !== Node.ELEMENT_NODE) return false;
-    return this._roleFromTestId(node.getAttribute('data-testid')) !== null;
+    if (node.getAttribute('data-testid') === 'user-message') return true;
+    return node.classList && [...node.classList].some(c => c.includes('font-claude-response'));
   },
 
+  // Maps a detected node to the element that should be watched and captured:
+  //   • user-message divs  → returned as-is
+  //   • font-claude-response paragraphs → parent div (holds all response paragraphs)
+  //
+  // Called by main.js in handleAddedNode and captureExistingMessages before
+  // passing nodes to scheduleCapture / captureNode. Returning the parent ensures
+  // the MutationObserver sees all paragraph additions for one AI turn, and
+  // streamWatchers deduplication prevents multiple watchers on the same container.
+  normalizeTurnNode(node) {
+    if (!node) return node;
+    if (node.getAttribute && node.getAttribute('data-testid') === 'user-message') return node;
+
+    const hasResponseClass = (el) =>
+      el && el.classList && [...el.classList].some(c => c.includes('font-claude-response'));
+
+    if (hasResponseClass(node)) {
+      // Walk UP through every element that also carries a font-claude-response-*
+      // class (wrapper divs, containers, etc.) until we reach the first ancestor
+      // that does NOT have it. That ancestor is the stable per-turn root used as
+      // the key for streamWatchers, so all inner elements normalise to the same
+      // node and only one watcher is ever created per AI turn.
+      let el = node.parentElement;
+      while (el && hasResponseClass(el)) {
+        el = el.parentElement;
+      }
+      return el || node.parentElement || node;
+    }
+
+    return node;
+  },
+
+  // ─── Parsing ──────────────────────────────────────────────────────────────
+
   parseMessage(node) {
-    const role = this._roleFromTestId(node.getAttribute('data-testid'));
-    if (!role) return null;
+    if (!node) return null;
 
-    // Target the prose container to exclude action buttons (Copy, Retry…)
-    // that live outside the response text. Fall back to the whole node.
-    const contentEl =
-      node.querySelector('[class*="prose"]')           ||
-      node.querySelector('[class*="ProseMirror"]')     ||
-      node.querySelector('[class*="message-content"]') ||
-      node.querySelector('[class*="MessageContent"]')  ||
-      node.querySelector('[class*="content"]')         ||
-      node;
+    // Human turn: data-testid="user-message" div contains the prompt directly.
+    if (node.getAttribute && node.getAttribute('data-testid') === 'user-message') {
+      const text = (node.innerText || node.textContent || '').trim();
+      return text ? { role: 'human', text } : null;
+    }
 
-    const text = (contentEl.innerText || contentEl.textContent || '').trim();
-    return text ? { role, text } : null;
+    // AI turn container (the parentElement of font-claude-response paragraphs).
+    // Collect text specifically from those paragraphs — not from the whole container —
+    // so that sibling button text (Copy, Retry, Share…) is excluded.
+    const hasResponse = (node.querySelector && node.querySelector('[class*="font-claude-response"]')) ||
+      (node.classList && [...node.classList].some(c => c.includes('font-claude-response')));
+
+    if (hasResponse) {
+      if (node.querySelector) {
+        const allMatching = [...node.querySelectorAll('[class*="font-claude-response"]')];
+        // Keep only LEAF nodes — elements that contain no further matching
+        // descendants. This prevents a wrapper div and its child <p> both
+        // matching, which would double the text when their innerText is joined.
+        const leaves = allMatching.filter(
+          el => el.querySelectorAll('[class*="font-claude-response"]').length === 0
+        );
+        if (leaves.length > 0) {
+          const text = leaves
+            .map(el => (el.innerText || el.textContent || '').trim())
+            .filter(Boolean)
+            .join('\n\n');
+          return text ? { role: 'assistant', text } : null;
+        }
+      }
+      // Fallback: node itself is a leaf response element
+      const text = (node.innerText || node.textContent || '').trim();
+      return text ? { role: 'assistant', text } : null;
+    }
+
+    return null;
   },
 
   // ─── Streaming Detection ──────────────────────────────────────────────────
 
   isStreaming(node) {
+    if (!node || !node.querySelector) return false;
     if (node.querySelector('[data-testid="streaming-cursor"]'))  return true;
     if (node.querySelector('[class*="cursor-blink"]'))           return true;
     if (node.querySelector('[class*="typing-indicator"]'))       return true;

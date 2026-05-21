@@ -149,15 +149,31 @@
 
   // ─── Node Handler ─────────────────────────────────────────────────────────
 
+  // If the adapter provides normalizeTurnNode(), use it to lift detected inner
+  // elements (e.g. Claude's per-paragraph nodes) up to their turn container
+  // before passing to scheduleCapture. Adapters that don't define it get the
+  // identity function, so ChatGPT / Gemini behaviour is unchanged.
+  const normalizeTurnNode = adapter.normalizeTurnNode
+    ? adapter.normalizeTurnNode.bind(adapter)
+    : n => n;
+
   function handleAddedNode(node) {
     if (node.nodeType !== Node.ELEMENT_NODE) return;
 
-    const candidates = [];
-    if (adapter.isMessageNode(node)) candidates.push(node);
-    candidates.push(...node.querySelectorAll(adapter.messageSelector));
+    const raw = [];
+    if (adapter.isMessageNode(node)) raw.push(node);
+    raw.push(...node.querySelectorAll(adapter.messageSelector));
 
-    for (const msgNode of candidates) {
-      scheduleCapture(msgNode);
+    // Normalize then deduplicate — two paragraphs from the same AI turn
+    // both normalize to the same parent container, so scheduleCapture
+    // (and therefore waitForComplete) is called only once per container.
+    const seen = new Set();
+    for (const n of raw) {
+      const normalized = normalizeTurnNode(n);
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        scheduleCapture(normalized);
+      }
     }
   }
 
@@ -194,46 +210,58 @@
   function waitForComplete(node) {
     if (streamWatchers.has(node)) return;
 
-    const probe = adapter.parseMessage(node);
-    if (probe && probe.text && !adapter.isStreaming(node)) {
-      captureNode(node);
-      return;
-    }
-
     let quietTimer        = null;
     let streamingDetected = false;
+    let hadMutations      = false;
 
     const obsv = new MutationObserver(() => {
+      // First mutation cancels the no-mutation fallback timer.
+      if (!hadMutations) {
+        hadMutations = true;
+        clearTimeout(noMutationTimer);
+      }
       if (quietTimer) clearTimeout(quietTimer);
 
       const streaming = adapter.isStreaming(node);
 
       if (streaming) {
+        // Platform confirms still generating.
         streamingDetected = true;
         quietTimer = setTimeout(finish, QUIET_MS);
       } else if (streamingDetected) {
-        // Clean done signal — short settle then capture.
-        // If streaming resumes, the next mutations will cancel this timer.
+        // Clean done signal: was streaming, now finished.
+        // If streaming resumes the next mutations cancel this timer.
         quietTimer = setTimeout(finish, SETTLE_MS);
       } else {
-        // isStreaming() never returned true — use safe long fallback.
+        // isStreaming() never returned true — signal unreliable, use long fallback.
         quietTimer = setTimeout(finish, QUIET_MS);
       }
     });
+
+    // Fallback for responses that arrive with content already present and produce
+    // no further mutations (e.g. cached replies, instant single-paragraph answers).
+    // Without this, the observer would never fire and we'd wait for TIMEOUT_MS.
+    // NOT used for live-streaming nodes because the first incoming mutation clears it.
+    const NO_MUTATION_MS  = 3000;
+    const noMutationTimer = setTimeout(() => {
+      if (hadMutations) return;
+      const probe = adapter.parseMessage(node);
+      if (probe && probe.text && !adapter.isStreaming(node)) finish();
+    }, NO_MUTATION_MS);
 
     const safetyTimer = setTimeout(finish, TIMEOUT_MS);
 
     function finish() {
       if (quietTimer) clearTimeout(quietTimer);
+      clearTimeout(noMutationTimer);
       clearTimeout(safetyTimer);
       obsv.disconnect();
       streamWatchers.delete(node);
       captureNode(node);
     }
 
-    // attributes: true lets us detect when platforms signal completion by
-    // changing/removing a streaming attribute (e.g. data-is-streaming on ChatGPT,
-    // 'pending' on Gemini) even when no further text mutations occur.
+    // attributes: true detects streaming-done signals that are attribute removals
+    // (data-is-streaming on ChatGPT, pending on Gemini) even when no text changes.
     obsv.observe(node, {
       childList:       true,
       subtree:         true,
@@ -259,16 +287,23 @@
   function captureExistingMessages() {
     setTimeout(() => {
       if (!enabled) return;
+      const seen = new Set();
       const nodes = document.querySelectorAll(adapter.messageSelector);
-      for (const node of nodes) {
-        if (streamWatchers.has(node)) continue;  // already being watched
 
-        if (adapter.isStreaming(node)) {
-          waitForComplete(node);                  // stream in progress — watch it
+      for (const node of nodes) {
+        // Normalize (e.g. Claude paragraphs → parent container) then deduplicate.
+        const normalized = normalizeTurnNode(node);
+        if (seen.has(normalized)) continue;
+        seen.add(normalized);
+
+        if (streamWatchers.has(normalized)) continue;
+
+        if (adapter.isStreaming(normalized)) {
+          waitForComplete(normalized);
           continue;
         }
 
-        captureNode(node);                        // complete — capture immediately
+        captureNode(normalized);
       }
     }, 1200);
   }

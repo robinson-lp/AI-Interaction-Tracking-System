@@ -38,11 +38,14 @@ window.AITracker.adapter = {
 
     const role = rawRole === 'user' ? 'human' : 'assistant';
 
-    // Prefer the rendered markdown block; fall back to the node's text.
+    // Assistant: target the .markdown / prose block (excludes action buttons).
+    // User:      target .whitespace-pre-wrap (ChatGPT's user-message text wrapper).
+    // Fallback:  the whole turn node.
     const contentEl =
       node.querySelector('.markdown') ||
       node.querySelector('[class*="prose"]') ||
       node.querySelector('[data-message-content]') ||
+      node.querySelector('.whitespace-pre-wrap') ||
       node;
 
     const text = (contentEl.innerText || contentEl.textContent || '').trim();

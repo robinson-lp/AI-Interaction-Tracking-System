@@ -31,22 +31,35 @@ window.AITracker.adapter = {
   },
 
   parseMessage(node) {
-    const tag = node.tagName.toLowerCase();
+    const tag  = node.tagName.toLowerCase();
     const role = tag === 'user-query' ? 'human' : 'assistant';
 
-    // User query text sits in a .query-text or .user-query-container span.
-    // Model response text sits in a .response-content or markdown-renderer.
-    // Never fall back to querySelector('p') — it returns only the first
-    // paragraph and silently discards everything after it.
+    // Speaker labels ("You said" / "Gemini said") live in a sibling element
+    // outside the actual content container. Try increasingly broad selectors
+    // until we find the element that holds only the message text.
     const contentEl =
-      node.querySelector('.query-text') ||
-      node.querySelector('[class*="query-text"]') ||
-      node.querySelector('markdown-renderer') ||
-      node.querySelector('[class*="response-content"]') ||
-      node.querySelector('[class*="message-text"]') ||
+      node.querySelector('message-content')              || // Angular sub-component
+      node.querySelector('.query-text')                  ||
+      node.querySelector('[class*="query-text"]')        ||
+      node.querySelector('markdown-renderer')            ||
+      node.querySelector('[class*="response-content"]')  ||
+      node.querySelector('[class*="message-text"]')      ||
+      node.querySelector('[class*="content-container"]') ||
       node;
 
-    const text = (contentEl.innerText || contentEl.textContent || '').trim();
+    let text = (contentEl.innerText || contentEl.textContent || '').trim();
+
+    // Last-resort cleanup: if we fell all the way back to the full custom
+    // element, strip the known Gemini speaker-label lines that precede the
+    // actual message. Confirmed from live output: "You said\n\n<message>"
+    // and "Gemini said\n\n<response>".
+    if (contentEl === node) {
+      text = text
+        .replace(/^You said[\s\n]*/i,    '')
+        .replace(/^Gemini said[\s\n]*/i, '')
+        .trim();
+    }
+
     return text ? { role, text } : null;
   },
 
