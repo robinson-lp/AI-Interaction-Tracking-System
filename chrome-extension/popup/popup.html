@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Interaction Tracker</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header__left">
+      <svg class="header__icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="12" cy="12" r="3" fill="currentColor"/>
+        <path d="M12 3v2M12 19v2M3 12h2M19 12h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <span class="header__title">AI Tracker</span>
+    </div>
+
+    <!-- Enable / Disable toggle -->
+    <label class="toggle" aria-label="Enable tracking">
+      <input type="checkbox" id="enabledToggle" />
+      <span class="toggle__track">
+        <span class="toggle__thumb"></span>
+      </span>
+      <span class="toggle__label" id="toggleLabel">ON</span>
+    </label>
+  </header>
+
+  <!-- Status banner shown while disabled -->
+  <div class="banner banner--disabled" id="disabledBanner" hidden>
+    Tracking is paused. Toggle ON to resume.
+  </div>
+
+  <!-- Stats section -->
+  <section class="stats" id="statsSection">
+    <h2 class="stats__heading">Captured interactions</h2>
+
+    <div class="platform-row">
+      <span class="platform-row__dot platform-row__dot--chatgpt"></span>
+      <span class="platform-row__name">ChatGPT</span>
+      <span class="platform-row__counts" id="statsChatgpt">— sessions · — messages</span>
+    </div>
+    <div class="platform-row">
+      <span class="platform-row__dot platform-row__dot--claude"></span>
+      <span class="platform-row__name">Claude</span>
+      <span class="platform-row__counts" id="statsClaude">— sessions · — messages</span>
+    </div>
+    <div class="platform-row">
+      <span class="platform-row__dot platform-row__dot--gemini"></span>
+      <span class="platform-row__name">Gemini</span>
+      <span class="platform-row__counts" id="statsGemini">— sessions · — messages</span>
+    </div>
+
+    <div class="stats__total" id="statsTotal">
+      Total: <strong id="statsTotalNum">0</strong> messages across
+      <strong id="statsTotalSessions">0</strong> sessions
+    </div>
+  </section>
+
+  <!-- Empty state -->
+  <div class="empty" id="emptyState" hidden>
+    <p>No interactions captured yet.</p>
+    <p class="empty__hint">Open ChatGPT, Claude, or Gemini and start chatting.</p>
+  </div>
+
+  <!-- Actions -->
+  <section class="actions">
+    <button class="btn btn--primary" id="exportBtn" disabled>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 3v13M7 11l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M4 20h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      Export all as CSV
+    </button>
+
+    <button class="btn btn--danger" id="clearBtn" disabled>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      Clear all data
+    </button>
+  </section>
+
+  <!-- Toast notification -->
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
