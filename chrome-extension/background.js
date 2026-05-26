@@ -52,6 +52,45 @@ function storeMessage(payload) {
       };
     }
 
+    // Two dedup strategies, selected by the recapture flag set in content scripts:
+    //
+    // recapture = true  (captureExistingMessages path):
+    //   Whitespace-normalised exact-match within the session. Session IDs are
+    //   derived from the conversation URL, so navigating back to the same chat
+    //   reuses the same session — any match here is always a re-capture, never
+    //   a fresh user send.
+    //
+    // recapture = false (live observer / scheduleCapture path):
+    //   Whitespace-normalised text within a 5-second time-window. Blocks two
+    //   content-script instances storing the same live event within milliseconds
+    //   of each other (including whitespace-variant captures of the same response),
+    //   while allowing the user to deliberately send the same message again later.
+    const normMsg = s => s.trim().replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n');
+    const pNorm   = normMsg(payload.message);
+
+    let alreadyStored;
+    if (payload.recapture) {
+      alreadyStored = sessions[session_id].messages.some(
+        m => m.role === payload.role && normMsg(m.message) === pNorm
+      );
+    } else {
+      // Human messages use a 120-second window: long enough to catch React
+      // DOM re-render re-captures (which arrive seconds after the original)
+      // while still allowing a user to legitimately send the same message
+      // again after 2 minutes.
+      // Assistant messages use 5 seconds: two content-script instances racing
+      // on the same live stream rarely diverge by more than a few seconds.
+      const DEDUP_WINDOW_MS = payload.role === 'human' ? 120000 : 5000;
+      alreadyStored = sessions[session_id].messages.some(m => {
+        if (m.role !== payload.role || normMsg(m.message) !== pNorm) return false;
+        const elapsed = Math.abs(
+          new Date(payload.timestamp).getTime() - new Date(m.timestamp).getTime()
+        );
+        return elapsed < DEDUP_WINDOW_MS;
+      });
+    }
+    if (alreadyStored) return;
+
     sessions[session_id].messages.push({
       session_id: session_id,
       timestamp:  payload.timestamp,

@@ -22,6 +22,10 @@
   let conversationObsv       = null;
   let pendingTimestamp       = null;
   const streamWatchers       = new WeakMap();
+  // Tracks DOM nodes that have already been scheduled or captured so that
+  // captureExistingMessages (called on toggle-on or SPA re-attach) never
+  // re-stores a message from a node the live observer already processed.
+  const capturedNodes        = new WeakSet();
 
   // One-time guards so hookSendEvents / watchForNavigation don't stack up
   // when start() is called again after a toggle.
@@ -181,13 +185,36 @@
     const parsed = adapter.parseMessage(msgNode);
 
     if (parsed && parsed.role === 'human') {
-      setTimeout(() => {
+      // Guard: captureExistingMessages must not re-process this node later.
+      if (capturedNodes.has(msgNode)) return;
+      capturedNodes.add(msgNode);
+
+      // 800 ms gives SPA platforms time to navigate to the conversation URL.
+      // For platforms that assign the URL *after* the first send (Gemini new
+      // chats), the adapter sets waitForConversationUrl: true. In that case,
+      // if we are currently at a root/home URL, we retry every 1200 ms until
+      // the URL contains a conversation ID (max 10 retries ≈ 12 s). This
+      // prevents capturing the human message under a phantom random-UUID session
+      // before the platform has navigated to the real conversation URL.
+      const ts = pendingTimestamp || new Date().toISOString();
+      pendingTimestamp = null;
+      const needsWait = adapter.waitForConversationUrl && !T.hasConversationUrl();
+      let retries = 0;
+      function doCapture() {
+        if (!T.hasConversationUrl() && retries < 10) {
+          retries++;
+          setTimeout(doCapture, 1200);
+          return;
+        }
         const p = adapter.parseMessage(msgNode);
         if (!p) return;
-        const ts = pendingTimestamp || new Date().toISOString();
-        pendingTimestamp = null;
         T.capture(p.role, p.text, adapter.platform, ts);
-      }, 150);
+      }
+      setTimeout(needsWait ? doCapture : () => {
+        const p = adapter.parseMessage(msgNode);
+        if (!p) return;
+        T.capture(p.role, p.text, adapter.platform, ts);
+      }, 800);
       return;
     }
 
@@ -209,6 +236,11 @@
 
   function waitForComplete(node) {
     if (streamWatchers.has(node)) return;
+
+    // Lock the conversation URL now. T.capture reads window.location.href at
+    // call time — if the user navigates away while the response is still
+    // streaming the URL would be wrong. Passing startUrl avoids that.
+    const startUrl = window.location.href;
 
     let quietTimer        = null;
     let streamingDetected = false;
@@ -257,7 +289,12 @@
       clearTimeout(safetyTimer);
       obsv.disconnect();
       streamWatchers.delete(node);
-      captureNode(node);
+      // If startUrl was a home/new-chat page (no conversation ID), upgrade to
+      // the current URL which by now should contain the real conversation ID.
+      // T.capture further validates this and falls back to window.location.href
+      // if needed, so passing an improved URL here is safe.
+      const captureUrl = T.hasConversationUrl(startUrl) ? startUrl : window.location.href;
+      captureNode(node, captureUrl);
     }
 
     // attributes: true detects streaming-done signals that are attribute removals
@@ -272,10 +309,16 @@
     streamWatchers.set(node, { obsv, safetyTimer });
   }
 
-  function captureNode(node) {
+  // url       — locked at stream-start time by waitForComplete; undefined = use current URL.
+  // recapture — true when called from captureExistingMessages (existing DOM content,
+  //             not a fresh user send). Controls which dedup strategy the background uses.
+  function captureNode(node, url, recapture) {
+    if (!enabled) return;              // tracking was toggled off while streaming
+    if (capturedNodes.has(node)) return;
     const p = adapter.parseMessage(node);
     if (!p) return;
-    T.capture(p.role, p.text, adapter.platform);
+    capturedNodes.add(node);
+    T.capture(p.role, p.text, adapter.platform, null, url, recapture);
   }
 
   // ─── Existing Messages ────────────────────────────────────────────────────
@@ -297,13 +340,14 @@
         seen.add(normalized);
 
         if (streamWatchers.has(normalized)) continue;
+        if (capturedNodes.has(normalized)) continue;  // already handled by live observer
 
         if (adapter.isStreaming(normalized)) {
           waitForComplete(normalized);
           continue;
         }
 
-        captureNode(normalized);
+        captureNode(normalized, undefined, true);  // recapture=true → exact-match dedup
       }
     }, 1200);
   }

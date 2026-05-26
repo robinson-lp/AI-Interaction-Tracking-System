@@ -38,6 +38,21 @@ window.AITracker.adapter = {
 
     const role = rawRole === 'user' ? 'human' : 'assistant';
 
+    if (role === 'assistant') {
+      // Skip reasoning/thinking blocks. ChatGPT wraps them in <details> and they
+      // appear before the actual response on o-series models. Capturing them
+      // produces a spurious short "Thinking" row before the real answer.
+      if (node.closest && node.closest('details')) return null;
+
+      // Also skip if the element contains only a thinking/loading label with no
+      // real content — a transient state that the noMutationTimer can catch early.
+      const thinkingEl =
+        node.querySelector('[data-testid*="thinking"]')   ||
+        node.querySelector('[data-testid*="reasoning"]')  ||
+        node.querySelector('[class*="thinking-indicator"]');
+      if (thinkingEl) return null;
+    }
+
     // Assistant: target the .markdown / prose block (excludes action buttons).
     // User:      target .whitespace-pre-wrap (ChatGPT's user-message text wrapper).
     // Fallback:  the whole turn node.
@@ -49,6 +64,10 @@ window.AITracker.adapter = {
       node;
 
     const text = (contentEl.innerText || contentEl.textContent || '').trim();
+
+    // Drop bare loading-state words that aren't a real response.
+    if (role === 'assistant' && /^(Thinking|Generating)\.{0,3}$/i.test(text)) return null;
+
     return text ? { role, text } : null;
   },
 

@@ -49,19 +49,25 @@ window.AITracker.adapter = {
 
     let text = (contentEl.innerText || contentEl.textContent || '').trim();
 
-    // Last-resort cleanup: if we fell all the way back to the full custom
-    // element, strip the known Gemini speaker-label lines that precede the
-    // actual message. Confirmed from live output: "You said\n\n<message>"
-    // and "Gemini said\n\n<response>".
-    if (contentEl === node) {
-      text = text
-        .replace(/^You said[\s\n]*/i,    '')
-        .replace(/^Gemini said[\s\n]*/i, '')
-        .trim();
-    }
+    // Strip Gemini's speaker-label prefixes unconditionally. These labels
+    // ("You said" / "Gemini said") appear both inside message-content elements
+    // and in the full custom-element fallback, so the old contentEl === node
+    // guard was insufficient. Confirmed from live output:
+    //   "You said\n\nHi how are you gemini"
+    //   "Gemini said\n\n<response text>"
+    text = text
+      .replace(/^You said[\s\n]*/i,    '')
+      .replace(/^Gemini said[\s\n]*/i, '')
+      .trim();
 
     return text ? { role, text } : null;
   },
+
+  // Gemini assigns the conversation URL several seconds after the first send
+  // (unlike ChatGPT/Claude which navigate before or during send). Setting this
+  // flag tells main.js to retry the human-message capture every 1200 ms until
+  // the URL contains a conversation ID, preventing phantom random-UUID sessions.
+  waitForConversationUrl: true,
 
   // ─── Streaming Detection ──────────────────────────────────────────────────
 
