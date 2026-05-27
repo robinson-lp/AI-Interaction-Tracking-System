@@ -46,7 +46,14 @@ window.AITracker = window.AITracker || {};
     if (role !== 'assistant') return false;
     // Normalise whitespace so streaming (compact) and final (spaced) renders
     // of the same response are treated as identical.
-    const key = text.trim().replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n');
+    const key = text
+      .replace(/[︀-️⃣]/g, '')
+      .replace(/[​-‍\u200E\u200F⁠﻿­]/g, '')
+      .trim()
+      .replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+      .replace(/[^\S\n]/g, ' ')
+      .replace(/ +/g, ' ')
+      .replace(/\n{3,}/g, '\n\n');
     if (T.seen.has(key)) return true;
     T.seen.add(key);
     return false;

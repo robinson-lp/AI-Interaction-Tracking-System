@@ -52,41 +52,98 @@ function storeMessage(payload) {
       };
     }
 
-    // Two dedup strategies, selected by the recapture flag set in content scripts:
-    //
-    // recapture = true  (captureExistingMessages path):
-    //   Whitespace-normalised exact-match within the session. Session IDs are
-    //   derived from the conversation URL, so navigating back to the same chat
-    //   reuses the same session — any match here is always a re-capture, never
-    //   a fresh user send.
-    //
-    // recapture = false (live observer / scheduleCapture path):
-    //   Whitespace-normalised text within a 5-second time-window. Blocks two
-    //   content-script instances storing the same live event within milliseconds
-    //   of each other (including whitespace-variant captures of the same response),
-    //   while allowing the user to deliberately send the same message again later.
-    const normMsg = s => s.trim().replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n');
-    const pNorm   = normMsg(payload.message);
+    // Normalise text for dedup comparison.
+    // Handles all the ways ChatGPT's React renderer produces different strings
+    // for the same response across DOM re-renders:
+    //   • \r\n / \r  → \n
+    //   • Non-breaking spaces, tabs, Unicode spaces → regular space
+    //   • Emoji variation selectors (U+FE0F) and combining enclosing keycap
+    //     (U+20E3) stripped — these render invisibly but differ between captures
+    //   • Zero-width / formatting chars stripped
+    //   • Triple+ blank lines collapsed to double
+    const normMsg = s => s
+      .replace(/[︀-️⃣]/g, '')
+      .replace(/[​-‍\u200E\u200F⁠﻿­]/g, '')
+      .trim()
+      .replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+      .replace(/[^\S\n]/g, ' ')
+      .replace(/ +/g, ' ')
+      .replace(/\n{3,}/g, '\n\n');
+    const pNorm = normMsg(payload.message);
+
+    // ── Human messages ────────────────────────────────────────────────────────
+    // recapture=true (captureExistingMessages):
+    //   1. Same session, exact normMsg match, no time limit — covers navigate-back
+    //      to an old conversation after any gap.
+    //   2. Different session, same platform, 5-min window — covers ChatGPT/Gemini
+    //      home-page orphan where live observer fires under a random-UUID session
+    //      and captureExistingMessages fires again under the real conversation session.
+    // recapture=false (live observer):
+    //   Cross-session, same platform, 2-min window — catches the race where the
+    //   live observer fires before the platform has navigated to the conversation URL
+    //   and the message lands in a home-page session first.
+
+    // ── Assistant messages ─────────────────────────────────────────────────────
+    // Within-session checks only.
+    // recapture=true  → exact normMsg match (navigate-back re-capture).
+    // recapture=false → normMsg match within 60 s.
+    //   Why 60 s: ChatGPT replaces the assistant DOM node multiple times after
+    //   streaming ends (syntax highlighting, footnote rendering, reaction buttons).
+    //   Each replacement creates a new DOM node that bypasses capturedNodes and
+    //   starts a new waitForComplete watcher.  These post-render nodes fire finish()
+    //   up to ~45 s after the original, so 5 s was too short.  Text must still
+    //   match after normMsg so two genuinely different responses within 60 s are
+    //   never blocked.
 
     let alreadyStored;
-    if (payload.recapture) {
+    if (payload.role === 'human') {
+      if (payload.recapture) {
+        // Same-session exact match (no time limit) — covers navigate-back after any gap.
+        alreadyStored = sessions[session_id].messages.some(
+          m => m.role === 'human' && normMsg(m.message) === pNorm
+        );
+        if (!alreadyStored) {
+          // Different session, same platform, 5-min window — catches the ChatGPT
+          // home-page orphan where the live observer fires under a random-UUID session
+          // and captureExistingMessages fires again under the real conversation session.
+          const CROSS_WINDOW_MS = 300000;
+          alreadyStored = Object.values(sessions).some(s => {
+            if (s.id === session_id || s.platform !== payload.platform) return false;
+            return s.messages.some(m => {
+              if (m.role !== 'human' || normMsg(m.message) !== pNorm) return false;
+              const elapsed = Math.abs(
+                new Date(payload.timestamp).getTime() - new Date(m.timestamp).getTime()
+              );
+              return elapsed < CROSS_WINDOW_MS;
+            });
+          });
+        }
+      } else {
+        // Live observer path: cross-session, same platform, 2-min window.
+        const HUMAN_WINDOW_MS = 120000;
+        alreadyStored = Object.values(sessions).some(s => {
+          if (s.platform !== payload.platform) return false;
+          return s.messages.some(m => {
+            if (m.role !== 'human' || normMsg(m.message) !== pNorm) return false;
+            const elapsed = Math.abs(
+              new Date(payload.timestamp).getTime() - new Date(m.timestamp).getTime()
+            );
+            return elapsed < HUMAN_WINDOW_MS;
+          });
+        });
+      }
+    } else if (payload.recapture) {
       alreadyStored = sessions[session_id].messages.some(
-        m => m.role === payload.role && normMsg(m.message) === pNorm
+        m => m.role === 'assistant' && normMsg(m.message) === pNorm
       );
     } else {
-      // Human messages use a 120-second window: long enough to catch React
-      // DOM re-render re-captures (which arrive seconds after the original)
-      // while still allowing a user to legitimately send the same message
-      // again after 2 minutes.
-      // Assistant messages use 5 seconds: two content-script instances racing
-      // on the same live stream rarely diverge by more than a few seconds.
-      const DEDUP_WINDOW_MS = payload.role === 'human' ? 120000 : 5000;
+      const ASSISTANT_WINDOW_MS = 60000; // 60 s — covers ChatGPT post-render node replacements
       alreadyStored = sessions[session_id].messages.some(m => {
-        if (m.role !== payload.role || normMsg(m.message) !== pNorm) return false;
+        if (m.role !== 'assistant' || normMsg(m.message) !== pNorm) return false;
         const elapsed = Math.abs(
           new Date(payload.timestamp).getTime() - new Date(m.timestamp).getTime()
         );
-        return elapsed < DEDUP_WINDOW_MS;
+        return elapsed < ASSISTANT_WINDOW_MS;
       });
     }
     if (alreadyStored) return;

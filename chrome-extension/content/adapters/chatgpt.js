@@ -8,6 +8,11 @@ window.AITracker.adapter = {
 
   platform: 'chatgpt',
 
+  // ChatGPT navigates from the home page to /c/<uuid> ~1 s after the first send.
+  // Without this flag, the human message is stored under the home-page random-UUID
+  // session before navigation completes. Mirrors the same mechanism used for Gemini.
+  waitForConversationUrl: true,
+
   // ─── Conversation Root ────────────────────────────────────────────────────
 
   // Returns the scrollable container that holds all conversation turns.
