@@ -276,6 +276,18 @@ body {
   background: rgba(243, 139, 168, 0.08);
 }
 
+/* ─── Focus (keyboard accessibility) ────────────────────────────────────────── */
+
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.toggle input:focus-visible ~ .toggle__track {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
 /* ─── Toast ──────────────────────────────────────────────────────────────────── */
 
 .toast {

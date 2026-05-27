@@ -201,20 +201,15 @@
       const needsWait = adapter.waitForConversationUrl && !T.hasConversationUrl();
       let retries = 0;
       function doCapture() {
-        if (!T.hasConversationUrl() && retries < 10) {
+        if (needsWait && !T.hasConversationUrl() && retries < 10) {
           retries++;
           setTimeout(doCapture, 1200);
           return;
         }
         const p = adapter.parseMessage(msgNode);
-        if (!p) return;
-        T.capture(p.role, p.text, adapter.platform, ts);
+        if (p) T.capture(p.role, p.text, adapter.platform, ts);
       }
-      setTimeout(needsWait ? doCapture : () => {
-        const p = adapter.parseMessage(msgNode);
-        if (!p) return;
-        T.capture(p.role, p.text, adapter.platform, ts);
-      }, 800);
+      setTimeout(doCapture, 800);
       return;
     }
 

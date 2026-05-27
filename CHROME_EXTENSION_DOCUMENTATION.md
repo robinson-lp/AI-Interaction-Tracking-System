@@ -410,6 +410,15 @@ window.AITracker.hasConversationUrl(); // should return true on a chat page
 
 ### v1.1.0
 
+**Production cleanup (code quality)**
+- Removed dead code: `T.isEnabled` (defined but never called — toggle state is managed by `main.js` via `chrome.storage.onChanged`)
+- Refactored: `extractFromPath(path)` private helper in `shared.js` deduplicates the session-ID regex that was previously repeated in `T.getSessionId`, `T.hasConversationUrl`, and `T.capture`
+- Simplified: `scheduleCapture` in `main.js` — unified two duplicate `parseMessage` / `T.capture` call-sites into a single `doCapture` function using a `needsWait` closure variable
+- Fixed: `popup.html` — `statsSection` was not marked `hidden` initially, causing a flash of placeholder "— sessions" text before stats loaded
+- Added: `focus-visible` keyboard accessibility styles to `popup.css` for buttons and the toggle
+- Bumped: `manifest.json` version from 1.0.0 → 1.1.0
+
+**Bug fixes**
 - **Fix:** Claude table and code block content was missing from CSV. Root cause: `parseMessage` only collected `font-claude-response` leaf elements; `<table>` has no such class. Fix: LCA (Lowest Common Ancestor) approach — the lowest ancestor containing all leaf paragraphs also contains tables and code blocks.
 - **Fix:** Duplicate Claude assistant rows with whitespace variants. Root cause: streaming render (compact) vs final render (spaced) produce different text. Fix: whitespace-normalize before dedup in both `T.isDuplicate` and background `storeMessage`.
 - **Fix:** Triple-duplicate Claude responses with artifact widgets. Root cause: multiple `font-claude-response` sections (separated by artifact containers) normalized to different containers → separate `waitForComplete` calls. Fix: `normalizeTurnNode` now walks to the **topmost** `font-claude-response` ancestor, ensuring all sections normalize to the same parent.
