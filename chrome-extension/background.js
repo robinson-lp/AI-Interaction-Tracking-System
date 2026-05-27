@@ -71,82 +71,32 @@ function storeMessage(payload) {
       .replace(/\n{3,}/g, '\n\n');
     const pNorm = normMsg(payload.message);
 
-    // ── Human messages ────────────────────────────────────────────────────────
-    // recapture=true (captureExistingMessages):
-    //   1. Same session, exact normMsg match, no time limit — covers navigate-back
-    //      to an old conversation after any gap.
-    //   2. Different session, same platform, 5-min window — covers ChatGPT/Gemini
-    //      home-page orphan where live observer fires under a random-UUID session
-    //      and captureExistingMessages fires again under the real conversation session.
-    // recapture=false (live observer):
-    //   Cross-session, same platform, 2-min window — catches the race where the
-    //   live observer fires before the platform has navigated to the conversation URL
-    //   and the message lands in a home-page session first.
+    // ── Primary dedup: same session, exact match ──────────────────────────────
+    // If this exact text (same role) already exists anywhere in this session,
+    // never store it again — regardless of timing, recapture flag, or how many
+    // times the platform re-renders the DOM node.
+    if (sessions[session_id].messages.some(
+      m => m.role === payload.role && normMsg(m.message) === pNorm
+    )) return;
 
-    // ── Assistant messages ─────────────────────────────────────────────────────
-    // Within-session checks only.
-    // recapture=true  → exact normMsg match (navigate-back re-capture).
-    // recapture=false → normMsg match within 60 s.
-    //   Why 60 s: ChatGPT replaces the assistant DOM node multiple times after
-    //   streaming ends (syntax highlighting, footnote rendering, reaction buttons).
-    //   Each replacement creates a new DOM node that bypasses capturedNodes and
-    //   starts a new waitForComplete watcher.  These post-render nodes fire finish()
-    //   up to ~45 s after the original, so 5 s was too short.  Text must still
-    //   match after normMsg so two genuinely different responses within 60 s are
-    //   never blocked.
-
-    let alreadyStored;
+    // ── Secondary dedup: cross-session home-page race (human only) ────────────
+    // ChatGPT and Gemini navigate from the home page to the real conversation URL
+    // ~1 s after the first send. Despite waitForConversationUrl, there is a narrow
+    // window where the live observer may fire under a home-page random-UUID session.
+    // If the same human text was stored in any other same-platform session within
+    // 5 minutes, treat it as the same message and skip it.
     if (payload.role === 'human') {
-      if (payload.recapture) {
-        // Same-session exact match (no time limit) — covers navigate-back after any gap.
-        alreadyStored = sessions[session_id].messages.some(
-          m => m.role === 'human' && normMsg(m.message) === pNorm
-        );
-        if (!alreadyStored) {
-          // Different session, same platform, 5-min window — catches the ChatGPT
-          // home-page orphan where the live observer fires under a random-UUID session
-          // and captureExistingMessages fires again under the real conversation session.
-          const CROSS_WINDOW_MS = 300000;
-          alreadyStored = Object.values(sessions).some(s => {
-            if (s.id === session_id || s.platform !== payload.platform) return false;
-            return s.messages.some(m => {
-              if (m.role !== 'human' || normMsg(m.message) !== pNorm) return false;
-              const elapsed = Math.abs(
-                new Date(payload.timestamp).getTime() - new Date(m.timestamp).getTime()
-              );
-              return elapsed < CROSS_WINDOW_MS;
-            });
-          });
-        }
-      } else {
-        // Live observer path: cross-session, same platform, 2-min window.
-        const HUMAN_WINDOW_MS = 120000;
-        alreadyStored = Object.values(sessions).some(s => {
-          if (s.platform !== payload.platform) return false;
-          return s.messages.some(m => {
-            if (m.role !== 'human' || normMsg(m.message) !== pNorm) return false;
-            const elapsed = Math.abs(
-              new Date(payload.timestamp).getTime() - new Date(m.timestamp).getTime()
-            );
-            return elapsed < HUMAN_WINDOW_MS;
-          });
+      const CROSS_WINDOW_MS = 300000;
+      if (Object.values(sessions).some(s => {
+        if (s.id === session_id || s.platform !== payload.platform) return false;
+        return s.messages.some(m => {
+          if (m.role !== 'human' || normMsg(m.message) !== pNorm) return false;
+          return Math.abs(
+            new Date(payload.timestamp).getTime() - new Date(m.timestamp).getTime()
+          ) < CROSS_WINDOW_MS;
         });
-      }
-    } else if (payload.recapture) {
-      alreadyStored = sessions[session_id].messages.some(
-        m => m.role === 'assistant' && normMsg(m.message) === pNorm
-      );
-    } else {
-      const ASSISTANT_WINDOW_MS = 60000; // 60 s — covers ChatGPT post-render node replacements
-      alreadyStored = sessions[session_id].messages.some(m => {
-        if (m.role !== 'assistant' || normMsg(m.message) !== pNorm) return false;
-        const elapsed = Math.abs(
-          new Date(payload.timestamp).getTime() - new Date(m.timestamp).getTime()
-        );
-        return elapsed < ASSISTANT_WINDOW_MS;
-      });
+      })) return;
     }
-    if (alreadyStored) return;
 
     sessions[session_id].messages.push({
       session_id: session_id,
